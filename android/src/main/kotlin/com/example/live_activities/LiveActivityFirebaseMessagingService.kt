@@ -11,6 +11,10 @@ import org.json.JSONObject
 
 class LiveActivityFirebaseMessagingService : FirebaseMessagingService() {
 
+    companion object {
+        private const val TAG = "LiveActivityFCMService"
+    }
+
     private fun jsonDecode(json: String): Map<String, Any> {
         val jsonObject = JSONObject(json)
         val map = mutableMapOf<String, Any>()
@@ -25,37 +29,49 @@ class LiveActivityFirebaseMessagingService : FirebaseMessagingService() {
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
-        val liveActivityManager = LiveActivityManagerHolder.instance!!
+        // manager null 체크
+        val liveActivityManager = LiveActivityManagerHolder.instance
+        if (liveActivityManager == null) {
+            Log.e(TAG, "LiveActivityManagerHolder.instance is null → skip FCM")
+            return
+        }
+
+        // data payload 비어 있으면 스킵
+        val args = remoteMessage.data
+        if (args.isEmpty()) {
+            Log.w(TAG, "FCM data payload is empty → skip")
+            return
+        }
 
         CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val args = remoteMessage.data
-                val event = args["event"] as String
-                val data = jsonDecode(args["content-state"] ?: "{}")
-                val id = args["activity-id"] as String
-                val timestamp =
-                    (args["timestamp"] as? String)?.toLongOrNull() ?: 0L
+            // event 키 체크
+            val event = args["event"] ?: run {
+                Log.e(TAG, "FCM payload missing 'event' → skip")
+                return@launch
+            }
 
-                when (event) {
-                    "update" -> {
-                        liveActivityManager.updateActivity(id, timestamp, data)
-                    }
+            // activity-id 키 체크
+            val id = args["activity-id"] ?: run {
+                Log.e(TAG, "FCM payload missing 'activity-id' → skip")
+                return@launch
+            }
 
-                    "end" -> {
-                        liveActivityManager.endActivity(id, data)
-                    }
-
-                    else -> {
-                        throw IllegalArgumentException("Unknown event type: $event")
-                    }
-                }
-
+            // content-state 파싱 (기본 "{}")
+            val contentState = args["content-state"].takeIf { !it.isNullOrBlank() } ?: "{}"
+            val dataMap = try {
+                jsonDecode(contentState)
             } catch (e: Exception) {
-                Log.e(
-                    "LiveActivityFirebaseMessagingService",
-                    "Error while parsing or processing FCM",
-                    e
-                )
+                Log.e(TAG, "Failed to parse content-state JSON → empty map", e)
+                emptyMap<String, Any>()
+            }
+
+            // timestamp 파싱 (없으면 0L)
+            val timestamp = args["timestamp"]?.toLongOrNull() ?: 0L
+
+            when (event) {
+                "update" -> liveActivityManager.updateActivity(id, timestamp, dataMap)
+                "end"    -> liveActivityManager.endActivity(id, dataMap)
+                else     -> Log.e(TAG, "Unknown event type: $event")
             }
         }
     }
